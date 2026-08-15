@@ -88,6 +88,12 @@ services:
       ROBLOX_CLIENT_ID: ${ROBLOX_CLIENT_ID:-}
       ROBLOX_CLIENT_SECRET: ${ROBLOX_CLIENT_SECRET:-}
       SITE_ADMINS: ${SITE_ADMINS:-}
+      # Required when the site and API are on different hostnames that share
+      # a parent domain (e.g. trptools.com + apis.trptools.com → .trptools.com).
+      # Without it the session cookie is host-only on the API's hostname, the
+      # browser never sends it to the site, and server-side rendering sees
+      # every visitor as signed out. Leave blank for a single-host deployment.
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       # The endpoint is internal to the compose network; the public URL is
       # what image tags in the browser resolve against.
       S3_ENDPOINT: http://minio:9000

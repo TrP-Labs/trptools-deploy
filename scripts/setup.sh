@@ -44,6 +44,43 @@ prompt FRONTEND_URL "Public URL of the site (FRONTEND_URL):" "http://localhost:3
 s3_default="$(printf '%s' "$BASE_URL" | sed -E 's#(https?://[^:/]+).*#\1:9000#')"
 prompt S3_PUBLIC_URL "Public URL uploaded images are served from (S3_PUBLIC_URL):" "$s3_default"
 
+# The session cookie has to be readable by both the site and the API. When
+# they sit on different hostnames under one parent domain, the cookie needs
+# an explicit Domain of that parent — otherwise it is host-only on the API
+# and the site renders every visitor as signed out.
+host_of() { printf '%s' "$1" | sed -E 's#^https?://##; s#[:/].*##'; }
+common_parent() {
+	# Longest shared dot-suffix of two hostnames, if it has 2+ labels.
+	local a b sa sb
+	a=$(host_of "$1")
+	b=$(host_of "$2")
+	[ "$a" = "$b" ] && return 0
+	while [ -n "$a" ]; do
+		case "$b" in
+		*".$a" | "$a")
+			# Needs at least domain + TLD to be a valid cookie domain.
+			if [ "$(printf '%s' "$a" | tr -cd '.' | wc -c)" -ge 1 ]; then
+				printf '.%s' "$a"
+			fi
+			return 0
+			;;
+		esac
+		case "$a" in
+		*.*) a=${a#*.} ;;
+		*) return 0 ;;
+		esac
+	done
+}
+cookie_default="$(common_parent "$BASE_URL" "$FRONTEND_URL")"
+if [ -n "$cookie_default" ]; then
+	echo
+	echo "The site and API are on different hostnames, so the session cookie"
+	echo "needs a shared parent domain to be visible to both."
+	prompt COOKIE_DOMAIN "  COOKIE_DOMAIN:" "$cookie_default"
+else
+	COOKIE_DOMAIN=""
+fi
+
 echo
 echo "Roblox OAuth (leave blank to fill in later — sign-in won't work until"
 echo "these are set; see the README for how to register an app):"
@@ -79,6 +116,10 @@ ROBLOX_CLIENT_SECRET=$ROBLOX_CLIENT_SECRET
 
 # Comma separated Roblox user IDs granted the site-wide admin rank.
 SITE_ADMINS=$SITE_ADMINS
+
+# Parent domain the session cookie is scoped to, when the site and API are on
+# different hostnames (e.g. .example.com). Blank for a single-host deploy.
+COOKIE_DOMAIN=$COOKIE_DOMAIN
 
 # --- Postgres -----------------------------------------------------------
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD

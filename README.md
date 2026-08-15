@@ -94,12 +94,35 @@ part of the backend container's startup.
 | `ENCRYPTION_KEY`                       | Encrypts stored Roblox OAuth tokens and group Open Cloud keys             |
 | `ROBLOX_CLIENT_ID` / `_SECRET`         | Roblox OAuth app credentials                                              |
 | `SITE_ADMINS`                          | Comma-separated Roblox user IDs granted the site-wide admin rank          |
+| `COOKIE_DOMAIN`                        | Parent domain the session cookie is scoped to — see below                 |
 | `POSTGRES_PASSWORD`                    | Database password (generated; Postgres isn't exposed outside the network) |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY`      | MinIO credentials (generated)                                             |
 | `S3_PUBLIC_URL`                        | Where browsers fetch uploaded route/depot images from                     |
 | `TAG`                                  | Image tag to deploy                                                       |
 
 All of these except `TAG` are filled in by `./scripts/setup.sh`.
+
+### Sign-in works on the API but the site still shows you signed out
+
+You're missing `COOKIE_DOMAIN`. When the site and API are on different
+hostnames — say `trptools.com` and `apis.trptools.com` — the session cookie
+defaults to *host-only* on the API's hostname. The browser dutifully sends it
+back to the API, which is why signing in appears to succeed, but it never
+sends it to the site, so server-side rendering sees an anonymous visitor on
+every page load.
+
+Set it to the shared parent, with the leading dot:
+
+```bash
+COOKIE_DOMAIN=.trptools.com
+```
+
+then `docker compose up -d` and sign in again — the old host-only cookie is
+still in your browser and won't be replaced until you do.
+
+`setup.sh` works this out from your two URLs and offers it as a default, so a
+fresh install doesn't hit this. Leave it blank when the site and API share one
+hostname.
 
 ## License
 
