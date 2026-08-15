@@ -1,0 +1,126 @@
+name: trptools
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trptools
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env — run ./scripts/setup.sh}
+      POSTGRES_DB: trptools
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U trptools -d trptools']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ['valkey-server', '--appendonly', 'yes']
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ['CMD', 'valkey-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # S3-compatible object storage for uploaded route and depot images. Its API
+  # port is published because uploaded images are served straight from it —
+  # see S3_PUBLIC_URL.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set in .env}
+    ports:
+      - '9000:9000'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Creates the bucket and makes it readable, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" &&
+        mc mb --ignore-existing "local/$${S3_BUCKET}" &&
+        mc anonymous set download "local/$${S3_BUCKET}"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+      S3_BUCKET: ${S3_BUCKET:-trptools}
+    restart: 'no'
+
+  backend:
+    image: ghcr.io/trp-labs/trptools-backend:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      DATABASE_URL: postgresql://trptools:${POSTGRES_PASSWORD}@postgres:5432/trptools
+      REDIS_URL: redis://valkey:6379
+      BASE_URL: ${BASE_URL:?set in .env}
+      FRONTEND_URL: ${FRONTEND_URL:?set in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set in .env — run ./scripts/setup.sh}
+      ROBLOX_CLIENT_ID: ${ROBLOX_CLIENT_ID:-}
+      ROBLOX_CLIENT_SECRET: ${ROBLOX_CLIENT_SECRET:-}
+      SITE_ADMINS: ${SITE_ADMINS:-}
+      # The endpoint is internal to the compose network; the public URL is
+      # what image tags in the browser resolve against.
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:?set in .env}
+      S3_BUCKET: ${S3_BUCKET:-trptools}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    ports:
+      - '3001:3001'
+
+  frontend:
+    image: ghcr.io/trp-labs/trptools-frontend:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      PORT: '3000'
+      ORIGIN: ${FRONTEND_URL:?set in .env}
+      # What the browser calls.
+      PUBLIC_API_URL: ${BASE_URL:?set in .env}
+      # What server-side rendering calls. Inside the container network the
+      # public URL points at this container, not the API, so SSR needs the
+      # service name instead.
+      INTERNAL_API_URL: http://backend:3001
+    ports:
+      - '3000:3000'
+    volumes:
+      # TERMS.md and PRIVACY.md, read once at startup. Populate with
+      # ./scripts/pull-policies.sh, or drop your own files here. Empty means
+      # no terms/privacy pages.
+      - ./policies:/app/policies:ro
+
+volumes:
+  postgres-data:
+  valkey-data:
+  minio-data:
