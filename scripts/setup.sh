@@ -153,8 +153,8 @@ S3_ACCESS_KEY=$S3_ACCESS_KEY
 S3_SECRET_KEY=$S3_SECRET_KEY
 S3_PUBLIC_URL=$S3_PUBLIC_URL
 
-# Image tag to deploy. "latest" tracks main; pin to a release like v1.2.3
-# for a stable rollout.
+# Image tag to deploy. "latest" tracks main; pin to a release for a stable
+# rollout — image tags carry no "v", so v2.1.0 publishes 2.1.0, 2.1 and 2.
 TAG=latest
 EOF
 chmod 600 .env

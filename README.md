@@ -133,8 +133,9 @@ Add `--profile bot` to both commands if you run the Discord bot, or it is left
 at its old image.
 
 `TAG` in `.env` controls which image tag is deployed — `latest` (default)
-tracks `main` in every source repo; pin it to a release like `v1.2.3` for a
-more predictable upgrade cadence. Database migrations run automatically as
+tracks `main` in every source repo; pin it to a release for a more predictable
+upgrade cadence. Image tags carry no `v` — the release tagged `v2.1.0` publishes
+`2.1.0`, `2.1` and `2`, so `TAG=2.1` follows patch releases and nothing else. Database migrations run automatically as
 part of the backend container's startup.
 
 ### Upgrading to 2.1.0
