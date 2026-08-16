@@ -88,6 +88,13 @@ services:
       ROBLOX_CLIENT_ID: ${ROBLOX_CLIENT_ID:-}
       ROBLOX_CLIENT_SECRET: ${ROBLOX_CLIENT_SECRET:-}
       SITE_ADMINS: ${SITE_ADMINS:-}
+      # Discord, for the optional bot. The dashboard talks to Discord itself to
+      # list channels and roles, so these belong to the API as well as to the
+      # bot container. Blank means the Bot page says so and offers nothing.
+      DISCORD_APP_ID: ${DISCORD_APP_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-}
       # Required when the site and API are on different hostnames that share
       # a parent domain (e.g. trptools.com + apis.trptools.com → .trptools.com).
       # Without it the session cookie is host-only on the API's hostname, the
@@ -125,6 +132,32 @@ services:
       # ./scripts/pull-policies.sh, or drop your own files here. Empty means
       # no terms/privacy pages.
       - ./policies:/app/policies:ro
+
+  # The Discord bot. Opt in with `docker compose --profile bot up -d`, once the
+  # Discord credentials are in .env — it exits immediately without them, and
+  # nothing else depends on it. An instance without a bot works exactly as
+  # before; groups simply have no server to connect.
+  bot:
+    image: ghcr.io/trp-labs/trptools-bot:${TAG:-latest}
+    profiles: ['bot']
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      # Deliberately not marked required with `:?`: compose interpolates every
+      # service before it applies profiles, so a required variable here would
+      # break `docker compose up -d` for the many instances that run no bot.
+      # The bot itself explains exactly what is missing and exits.
+      DISCORD_APP_ID: ${DISCORD_APP_ID:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      # The service name, not BASE_URL: inside the compose network the public
+      # URL does not reach the API.
+      API_URL: http://backend:3001
+      BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-}
+      # Shared with the API, which publishes sign-up changes on it so Discord
+      # sheets follow sign-ups made on the website.
+      REDIS_URL: redis://valkey:6379
 
 volumes:
   postgres-data:

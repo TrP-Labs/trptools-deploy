@@ -5,9 +5,10 @@ management, shift scheduling and multi-user dispatch for the Roblox transit
 game TrP — on your own server with Docker.
 
 This repo does not contain any application source. It pulls prebuilt images
-published by [`trptools-backend`](https://github.com/TrP-Labs/trptools-backend)
-and [`trptools-frontend`](https://github.com/TrP-Labs/trptools-frontend) from
-GitHub Container Registry every time you `docker compose pull`.
+published by [`trptools-backend`](https://github.com/TrP-Labs/trptools-backend),
+[`trptools-frontend`](https://github.com/TrP-Labs/trptools-frontend) and the
+optional [`trptools-bot`](https://github.com/TrP-Labs/trptools-bot) from GitHub
+Container Registry every time you `docker compose pull`.
 
 ## Requirements
 
@@ -59,6 +60,53 @@ TrP Tools authenticates exclusively with Roblox OAuth.
 Each group additionally supplies its own Open Cloud API key in group
 settings once the site is running — see the backend's README for why.
 
+## Setting up the Discord bot
+
+Optional. Without it the site works exactly as it does otherwise — groups just
+have no Discord server to connect. With it, a group can announce shifts, run
+staff sign-up sheets that stay in step with the website, and post a live picture
+of the dispatch board.
+
+1. Create an application at the
+   [Discord developer portal](https://discord.com/developers/applications).
+2. On **OAuth2**, add `<BASE_URL>/bot/callback` as a redirect URI. Without this
+   the dashboard's "Add to Discord" button is refused — and there is no API to
+   set it, so it has to be done by hand.
+3. On **Bot**, create a token. No privileged intents are needed: the bot never
+   reads message content, members or presence.
+4. Put the application ID, client secret and bot token in `.env` as
+   `DISCORD_APP_ID`, `DISCORD_CLIENT_SECRET` and `DISCORD_BOT_TOKEN`
+   (`setup.sh` asks for all three).
+5. Start it:
+
+```bash
+docker compose --profile bot up -d
+```
+
+The bot runs under a compose profile, so a plain `docker compose up -d` leaves
+it out — including on later upgrades. Keep the `--profile bot` flag, or set
+`COMPOSE_PROFILES=bot` in your environment once and forget about it.
+
+Upgrading an existing instance rather than setting one up? `setup.sh` writes
+`.env` from scratch and would replace your secrets, so add these by hand
+instead — the last one is a secret you invent, shared between the API and the
+bot:
+
+```bash
+DISCORD_APP_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_BOT_TOKEN=
+BOT_SERVICE_TOKEN=$(openssl rand -hex 32)
+```
+
+Slash commands register themselves each time the container starts. Global
+commands can take up to an hour to appear in a server the first time.
+
+One group manager then connects a server from the dashboard's **Bot** page, and
+configures everything else — channels, ping roles, which features are on, and
+what the bot does on its own — from there. Nothing about the bot is configured
+in `.env` beyond the credentials above.
+
 ## Terms and privacy pages
 
 The frontend reads `TERMS.md`/`PRIVACY.md` from `./policies` at container
@@ -81,10 +129,32 @@ docker compose pull
 docker compose up -d
 ```
 
+Add `--profile bot` to both commands if you run the Discord bot, or it is left
+at its old image.
+
 `TAG` in `.env` controls which image tag is deployed — `latest` (default)
-tracks `main` in both source repos; pin it to a release like `v1.2.3` for a
+tracks `main` in every source repo; pin it to a release like `v1.2.3` for a
 more predictable upgrade cadence. Database migrations run automatically as
 part of the backend container's startup.
+
+### Upgrading to 2.1.0
+
+**Shift sign-ups were rebuilt, and the upgrade does not carry the old ones
+over.** Sign-up slots used to be defined on each shift; they now belong to a
+Roblox rank and apply to every shift that rank works. There is no honest
+automatic mapping between the two — a rank has one sheet, while slots were
+per shift and per occurrence — so the 2.1.0 migration drops the old
+`shift_slots` and `shift_signups` tables rather than guessing.
+
+In practice: after upgrading, define a sheet per rank on the dashboard's
+**Ranks** page. Anyone signed up for a *future* shift under the old model will
+need to sign up again.
+
+Take a backup first if those rows matter to you:
+
+```bash
+docker compose exec -T postgres pg_dump -U trptools trptools > trptools-backup.sql
+```
 
 ## What's in `.env`
 
@@ -98,9 +168,12 @@ part of the backend container's startup.
 | `POSTGRES_PASSWORD`                    | Database password (generated; Postgres isn't exposed outside the network) |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY`      | MinIO credentials (generated)                                             |
 | `S3_PUBLIC_URL`                        | Where browsers fetch uploaded route/depot images from                     |
+| `DISCORD_APP_ID` / `_CLIENT_SECRET` / `_BOT_TOKEN` | Discord application credentials, for the optional bot          |
+| `BOT_SERVICE_TOKEN`                    | Shared secret the bot authenticates to the API with (generated)           |
 | `TAG`                                  | Image tag to deploy                                                       |
 
-All of these except `TAG` are filled in by `./scripts/setup.sh`.
+All of these except `TAG` are filled in by `./scripts/setup.sh`. The Discord
+ones may be left blank; everything else works without them.
 
 ### Sign-in works on the API but the site still shows you signed out
 
@@ -128,4 +201,5 @@ hostname.
 
 MIT — see [LICENSE](./LICENSE). The application source has its own MIT
 licenses: [trptools-backend](https://github.com/TrP-Labs/trptools-backend),
-[trptools-frontend](https://github.com/TrP-Labs/trptools-frontend).
+[trptools-frontend](https://github.com/TrP-Labs/trptools-frontend),
+[trptools-bot](https://github.com/TrP-Labs/trptools-bot).
