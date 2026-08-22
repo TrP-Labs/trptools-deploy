@@ -96,7 +96,7 @@ prompt DISCORD_CLIENT_SECRET "  Discord client secret:" ""
 prompt DISCORD_BOT_TOKEN "  Discord bot token:" ""
 
 echo
-read -rp "Pull the default TrP Tools policies (terms/privacy) from TrP-Labs/Policies now? [Y/n] " pull_reply
+read -rp "Pull the default TrP Tools footer documents from TrP-Labs/Policies now? [Y/n] " pull_reply
 case "$pull_reply" in
 [nN]*) ;;
 *) ./scripts/pull-policies.sh ;;

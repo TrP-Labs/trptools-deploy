@@ -107,20 +107,37 @@ configures everything else — channels, ping roles, which features are on, and
 what the bot does on its own — from there. Nothing about the bot is configured
 in `.env` beyond the credentials above.
 
-## Terms and privacy pages
+## The footer bar
 
-The frontend reads `TERMS.md`/`PRIVACY.md` from `./policies` at container
-start (mounted read-only), not from its image. Two ways to populate it:
+Everything on the right of the site's footer comes from `./policies`, read at
+container start (mounted read-only) rather than baked into the image. One file
+per link:
+
+| File | Becomes |
+| --- | --- |
+| `Privacy Policy.md` | A page at `/policies/privacy-policy`, linked as "Privacy Policy" |
+| `About.txt` | A link straight to the URL inside the file |
+
+**A file's name minus its extension is the label, exactly as written.** That is
+the whole interface — rename a file to rename the link, delete it to remove
+the link. `.md` is rendered as a document; `.txt` holds a single URL, either an
+absolute `https://` one or a root-relative path like `/about`.
+
+Two ways to populate it:
 
 ```bash
-./scripts/pull-policies.sh                       # TrP-Labs/Policies, "prod" branch
+./scripts/pull-policies.sh                        # TrP-Labs/Policies, default branch
 ./scripts/pull-policies.sh your-org/Policies main # your own fork/repo
 ```
 
-or just drop `TERMS.md`/`PRIVACY.md` into `./policies` yourself. Either way,
-`docker compose restart frontend` afterwards — the files are read once at
-startup, not per request. An empty `./policies` means the site has no
-terms/privacy pages and no footer links to them.
+or drop your own files into `./policies` by hand. Either way,
+`docker compose restart frontend` afterwards — the directory is read once at
+startup, not per request. An empty `./policies` means a footer with no links.
+
+The pull script copies every `.md` and `.txt` across under its own name and
+never deletes anything, so if the source renames a file you will have both the
+old and the new one and the site will offer both. It says so when it spots one;
+delete the leftover unless it is yours.
 
 ## Updating
 
@@ -137,6 +154,33 @@ tracks `main` in every source repo; pin it to a release for a more predictable
 upgrade cadence. Image tags carry no `v` — the release tagged `v2.1.0` publishes
 `2.1.0`, `2.1` and `2`, so `TAG=2.1` follows patch releases and nothing else. Database migrations run automatically as
 part of the backend container's startup.
+
+### Upgrading to 2.2.0
+
+**Re-pull your footer documents.** The site's footer bar is now built from
+whatever `./policies` holds, and a file's name minus its extension is the link
+label — so the old `TERMS.md` would read as "TERMS". The default source has
+renamed its files to match:
+
+```bash
+./scripts/pull-policies.sh
+rm -f policies/TERMS.md policies/PRIVACY.md   # the old names, now superseded
+docker compose restart frontend
+```
+
+Skip the `rm` and the site offers both the old and the new link. The script
+says so when it notices, but it will not delete a file for you.
+
+`/terms` and `/privacy` are gone, replaced by `/policies/<name>`. Update any
+link you have pointing at the old addresses.
+
+**The upcoming-shift announcement no longer pings by default.** Whether it
+mentions the shift ping role is now a setting on the dashboard's **Bot** page,
+off out of the box; the "starting now" announcement still pings as it always
+did. Turn it back on there if your group relied on it.
+
+Two migrations run on backend start. Both only add columns with defaults, so
+there is nothing to back up beyond your usual practice.
 
 ### Upgrading to 2.1.0
 

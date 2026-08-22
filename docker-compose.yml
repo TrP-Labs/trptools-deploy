@@ -128,9 +128,9 @@ services:
     ports:
       - '3000:3000'
     volumes:
-      # TERMS.md and PRIVACY.md, read once at startup. Populate with
-      # ./scripts/pull-policies.sh, or drop your own files here. Empty means
-      # no terms/privacy pages.
+      # The site's footer bar: one file per link, named for the label it
+      # shows. Read once at startup. Populate with ./scripts/pull-policies.sh,
+      # or drop your own files here. Empty means a footer with no links.
       - ./policies:/app/policies:ro
 
   # The Discord bot. Opt in with `docker compose --profile bot up -d`, once the

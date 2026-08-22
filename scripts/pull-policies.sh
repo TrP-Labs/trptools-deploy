@@ -1,45 +1,83 @@
 #!/usr/bin/env bash
-# Fetches terms.md and privacy.md from a Policies repo and writes them into
-# ./policies as TERMS.md / PRIVACY.md, which is what the frontend's
-# POLICIES_DIR expects. Re-run any time to refresh, then
+# Mirrors a Policies repository into ./policies, which is what the frontend
+# serves its footer bar from. Re-run any time to refresh, then
 # `docker compose restart frontend` to pick up the change — it's read once
 # at startup.
 #
+# Every .md and .txt in the source is copied across **under its own name**,
+# because that name is the link's label on the site: "Privacy Policy.md"
+# becomes a page linked as "Privacy Policy", and "About.txt" becomes a link
+# straight to the URL inside it. Nothing is renamed or case-corrected here;
+# doing so would silently rewrite what the site says.
+#
 # Usage: ./scripts/pull-policies.sh [owner/repo] [ref]
-#   Defaults to TrP-Labs/Policies at its "prod" branch. Point this at a fork
+#   Defaults to TrP-Labs/Policies at its default branch. Point this at a fork
 #   (e.g. your-org/Policies) to publish your own text instead.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 REPO="${1:-TrP-Labs/Policies}"
-REF="${2:-prod}"
-RAW="https://raw.githubusercontent.com/$REPO/$REF"
+REF="${2:-main}"
+API="https://api.github.com/repos/$REPO/contents?ref=$REF"
 
 mkdir -p policies
 
-fetch_one() {
-	# fetch_one <source-filename-candidates...> <dest-filename>
-	local dest=${*: -1}
-	local candidates=("${@:1:$#-1}")
-	local name
-	for name in "${candidates[@]}"; do
-		if curl -fsSL "$RAW/$name" -o "policies/$dest.tmp" 2>/dev/null; then
-			mv "policies/$dest.tmp" "policies/$dest"
-			echo "Pulled $name -> policies/$dest"
-			return 0
-		fi
-	done
-	rm -f "policies/$dest.tmp"
-	echo "warning: no ${candidates[0]} (or similarly-cased file) found at $REPO@$REF — skipping $dest" >&2
-	return 1
+listing=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API" 2>/dev/null) || {
+	echo "error: could not list $REPO@$REF." >&2
+	echo "Check the repository and branch exist and are public. Unauthenticated" >&2
+	echo "GitHub API calls are also rate limited to 60/hour per address." >&2
+	exit 1
 }
 
-status=0
-fetch_one terms.md TERMS.md TERMS.md || status=1
-fetch_one privacy.md PRIVACY.md PRIVACY.md || status=1
+# `name` and `download_url` only; anything that is not a plain file is skipped,
+# so a subdirectory in the source cannot surprise us with a path to write to.
+# Read into an array the long way rather than with `mapfile`, which macOS's
+# bash 3.2 does not have — this script is run on laptops as well as servers.
+entries=()
+while IFS= read -r line; do
+	[ -n "$line" ] && entries+=("$line")
+done < <(printf '%s' "$listing" | python3 -c '
+import json, sys
+for item in json.load(sys.stdin):
+    if item.get("type") != "file":
+        continue
+    name = item["name"]
+    if not name.lower().endswith((".md", ".txt")):
+        continue
+    print(name + "\t" + item["download_url"])
+')
 
-if [ "$status" -ne 0 ]; then
-	echo "Some policy files were not pulled; the corresponding page(s) on the" >&2
-	echo "site will 404 until they're present in ./policies." >&2
+if [ "${#entries[@]}" -eq 0 ]; then
+	echo "warning: $REPO@$REF holds no .md or .txt files, so the site's footer" >&2
+	echo "bar will be empty." >&2
+	exit 0
 fi
-exit 0
+
+pulled=()
+for entry in "${entries[@]}"; do
+	name=${entry%%$'\t'*}
+	url=${entry#*$'\t'}
+
+	if curl -fsSL "$url" -o "policies/$name.tmp"; then
+		mv "policies/$name.tmp" "policies/$name"
+		pulled+=("$name")
+		echo "Pulled $name"
+	else
+		rm -f "policies/$name.tmp"
+		echo "warning: could not download $name" >&2
+	fi
+done
+
+# Files left behind by a previous pull are the trap here: the source renaming
+# "TERMS.md" to "Terms Of Service.md" leaves both sitting in ./policies, and
+# the site dutifully shows two links. They are reported rather than deleted,
+# because an operator may have dropped their own files in here by hand.
+shopt -s nullglob
+for existing in policies/*.md policies/*.txt; do
+	name=$(basename "$existing")
+	for kept in "${pulled[@]}"; do
+		[ "$name" = "$kept" ] && continue 2
+	done
+	echo "note: policies/$name is not in $REPO@$REF — delete it unless it is yours," >&2
+	echo "      or the site will keep offering it." >&2
+done
