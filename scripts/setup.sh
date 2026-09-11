@@ -41,8 +41,8 @@ echo
 prompt BASE_URL "Public URL of the API (BASE_URL):" "http://localhost:3001"
 prompt FRONTEND_URL "Public URL of the site (FRONTEND_URL):" "http://localhost:3000"
 
-s3_default="$(printf '%s' "$BASE_URL" | sed -E 's#(https?://[^:/]+).*#\1:9000#')"
-prompt S3_PUBLIC_URL "Public URL uploaded images are served from (S3_PUBLIC_URL):" "$s3_default"
+s3_default="$(printf '%s' "$BASE_URL" | sed -E 's#(https?://[^:/]+).*#\1:9000/trptools#')"
+prompt S3_PUBLIC_URL "Full public bucket URL, including /trptools for MinIO (S3_PUBLIC_URL):" "$s3_default"
 
 # The session cookie has to be readable by both the site and the API. When
 # they sit on different hostnames under one parent domain, the cookie needs
@@ -151,6 +151,7 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 S3_BUCKET=trptools
 S3_ACCESS_KEY=$S3_ACCESS_KEY
 S3_SECRET_KEY=$S3_SECRET_KEY
+# Full public bucket URL: include the bucket path for MinIO.
 S3_PUBLIC_URL=$S3_PUBLIC_URL
 
 # Image tag to deploy. "latest" tracks main; pin to a release for a stable

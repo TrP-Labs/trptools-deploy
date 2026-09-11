@@ -212,13 +212,47 @@ docker compose exec -T postgres pg_dump -U trptools trptools > trptools-backup.s
 | `COOKIE_DOMAIN`                        | Parent domain the session cookie is scoped to — see below                 |
 | `POSTGRES_PASSWORD`                    | Database password (generated; Postgres isn't exposed outside the network) |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY`      | MinIO credentials (generated)                                             |
-| `S3_PUBLIC_URL`                        | Where browsers fetch uploaded route/depot images from                     |
+| `S3_PUBLIC_URL`                        | Full public bucket URL, including the bucket path for MinIO               |
 | `DISCORD_APP_ID` / `_CLIENT_SECRET` / `_BOT_TOKEN` | Discord application credentials, for the optional bot          |
 | `BOT_SERVICE_TOKEN`                    | Shared secret the bot authenticates to the API with (generated)           |
 | `TAG`                                  | Image tag to deploy                                                       |
 
 All of these except `TAG` are filled in by `./scripts/setup.sh`. The Discord
 ones may be left blank; everything else works without them.
+
+### Object storage: MinIO or R2
+
+The setup script defaults to MinIO and includes `/trptools` in
+`S3_PUBLIC_URL`. The backend appends only the object key (`groups/...`) to
+this URL. Keep `S3_BUCKET` set: uploads and deletes still need the bucket name.
+
+**When upgrading from the old URL behavior**, add `/<bucket-name>` to your
+existing MinIO `S3_PUBLIC_URL`, for example
+`https://storage.example.com/trptools`. Older backends append the bucket
+themselves, so update this setting together with the backend image.
+
+For R2, replace the storage settings in `.env`:
+
+```dotenv
+S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_BUCKET=trptools
+S3_ACCESS_KEY=<r2-access-key-id>
+S3_SECRET_KEY=<r2-secret-access-key>
+S3_PUBLIC_URL=https://assets.example.com
+```
+
+Use the public domain attached to your R2 bucket without a bucket suffix.
+The endpoint and region overrides are optional; omitting them keeps the
+Docker MinIO defaults. The bundled MinIO services still start with this
+compose file, but the backend uses the configured external endpoint.
+Recreate the backend with `docker compose up -d backend` after changing
+settings. Copy existing objects with their original `groups/...` keys;
+media URLs are derived from those keys, so no database migration is needed.
+
+Public reads must be enabled through the bucket policy or public domain.
+Uploads no longer send object ACLs; Docker configures MinIO's public bucket
+policy automatically.
 
 ### Sign-in works on the API but the site still shows you signed out
 
