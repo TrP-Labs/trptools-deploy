@@ -33,7 +33,7 @@ prompt() {
 }
 # Quoting prevents Compose from expanding dollar signs in operator credentials.
 write_env() {
-    local value=${2//\\/\\\\}
+    local value=$2
     value=${value//\'/\\\'}
     printf "%s='%s'\n" "$1" "$value"
 }
