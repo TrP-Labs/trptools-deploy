@@ -1,0 +1,31 @@
+name: Check setup
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and validate configuration
+        run: |
+          bash -n scripts/setup.sh
+          printf '\n\n\n\n\n\n\n' | ./scripts/setup.sh
+          docker compose config --quiet
+          docker compose --profile bot config --quiet
+      - name: Check automatic storage setup
+        run: |
+          docker compose up -d garage garage-init images
+          test "$(curl --retry 10 --retry-connrefused --retry-delay 1 -s -o /dev/null -w '%{http_code}' http://localhost:9000/missing-test-object)" = 404
+          test "$(curl -s -X PUT -d blocked -o /dev/null -w '%{http_code}' http://localhost:9000/missing-test-object)" = 403
+      - name: Stop test containers
+        if: always()
+        run: docker compose down -v

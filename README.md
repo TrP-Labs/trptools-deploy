@@ -1,284 +1,60 @@
-# TrP Tools — deploy
-
-Run your own instance of [TrP Tools](https://github.com/TrP-Labs) — group
-management, shift scheduling and multi-user dispatch for the Roblox transit
-game TrP — on your own server with Docker.
-
-This repo does not contain any application source. It pulls prebuilt images
-published by [`trptools-backend`](https://github.com/TrP-Labs/trptools-backend),
-[`trptools-frontend`](https://github.com/TrP-Labs/trptools-frontend) and the
-optional [`trptools-bot`](https://github.com/TrP-Labs/trptools-bot) from GitHub
-Container Registry every time you `docker compose pull`.
-
-## Requirements
-
-- A server with Docker and the Compose v2 plugin (`docker compose version`
-  should work).
-- `openssl` and `curl` (present on essentially every Linux distro and macOS).
-- A [Roblox app](https://create.roblox.com/dashboard/credentials) for OAuth —
-  can be added after your first deploy.
-
-## Quick start
-
-```bash
-git clone https://github.com/TrP-Labs/trptools-deploy.git
-cd trptools-deploy
-./scripts/setup.sh
-docker compose up -d
-```
-
-`setup.sh` asks a few questions (or accept the defaults for a local trial),
-generates the `ENCRYPTION_KEY`, database password and object-storage keys,
-and writes `.env`. It will not overwrite an existing `.env` without asking.
-
-Once containers are up, the site is at `FRONTEND_URL` (default
-`http://localhost:3000`) and the API at `BASE_URL` (default
-`http://localhost:3001`). The API applies its own database migrations on
-start, so a fresh deploy comes up ready.
-
-## No bundled TLS
-
-This compose file exposes plain HTTP on the ports above — it doesn't run a
-reverse proxy or manage certificates. For anything but a local trial, put one
-in front: [Caddy](https://caddyserver.com) (`reverse_proxy` + automatic
-HTTPS is a few lines), nginx with certbot, or a tunnel like Cloudflare
-Tunnel. Point it at `127.0.0.1:3000` for the site and `127.0.0.1:3001` for
-the API, and set `BASE_URL`/`FRONTEND_URL` in `.env` to the public
-`https://` addresses before running `setup.sh` (or edit them into `.env`
-afterwards and restart).
-
-## Setting up Roblox
-
-TrP Tools authenticates exclusively with Roblox OAuth.
-
-1. Create an app at [Creator Dashboard credentials](https://create.roblox.com/dashboard/credentials).
-2. Enable the `openid`, `profile` and **`group:read`** permissions.
-3. Set the redirect URI to `<BASE_URL>/auth/callback`.
-4. Put the client ID and secret in `.env` as `ROBLOX_CLIENT_ID` /
-   `ROBLOX_CLIENT_SECRET`, then `docker compose up -d` again.
-
-Each group additionally supplies its own Open Cloud API key in group
-settings once the site is running — see the backend's README for why.
-
-## Setting up the Discord bot
-
-Optional. Without it the site works exactly as it does otherwise — groups just
-have no Discord server to connect. With it, a group can announce shifts, run
-staff sign-up sheets that stay in step with the website, and post a live picture
-of the dispatch board.
-
-1. Create an application at the
-   [Discord developer portal](https://discord.com/developers/applications).
-2. On **OAuth2**, add `<BASE_URL>/bot/callback` as a redirect URI. Without this
-   the dashboard's "Add to Discord" button is refused — and there is no API to
-   set it, so it has to be done by hand.
-3. On **Bot**, create a token. No privileged intents are needed: the bot never
-   reads message content, members or presence.
-4. Put the application ID, client secret and bot token in `.env` as
-   `DISCORD_APP_ID`, `DISCORD_CLIENT_SECRET` and `DISCORD_BOT_TOKEN`
-   (`setup.sh` asks for all three).
-5. Start it:
-
-```bash
-docker compose --profile bot up -d
-```
-
-The bot runs under a compose profile, so a plain `docker compose up -d` leaves
-it out — including on later upgrades. Keep the `--profile bot` flag, or set
-`COMPOSE_PROFILES=bot` in your environment once and forget about it.
-
-Upgrading an existing instance rather than setting one up? `setup.sh` writes
-`.env` from scratch and would replace your secrets, so add these by hand
-instead — the last one is a secret you invent, shared between the API and the
-bot:
-
-```bash
-DISCORD_APP_ID=
-DISCORD_CLIENT_SECRET=
-DISCORD_BOT_TOKEN=
-BOT_SERVICE_TOKEN=$(openssl rand -hex 32)
-```
-
-Slash commands register themselves each time the container starts. Global
-commands can take up to an hour to appear in a server the first time.
+# TrPTools deploy
 
-One group manager then connects a server from the dashboard's **Bot** page, and
-configures everything else — channels, ping roles, which features are on, and
-what the bot does on its own — from there. Nothing about the bot is configured
-in `.env` beyond the credentials above.
+Run TrPTools on your own server with Docker Compose: Postgres, Valkey, Garage, the API, and the site. Images support AMD64 and ARM64; the Discord bot is optional.
 
-## The footer bar
+## Docker
 
-Everything on the right of the site's footer comes from `./policies`, read at
-container start (mounted read-only) rather than baked into the image. One file
-per link:
-
-| File | Becomes |
-| --- | --- |
-| `Privacy Policy.md` | A page at `/policies/privacy-policy`, linked as "Privacy Policy" |
-| `About.txt` | A link straight to the URL inside the file |
-
-**A file's name minus its extension is the label, exactly as written.** That is
-the whole interface — rename a file to rename the link, delete it to remove
-the link. `.md` is rendered as a document; `.txt` holds a single URL, either an
-absolute `https://` one or a root-relative path like `/about`.
+1. Install Docker with Compose v2, Git, and OpenSSL.
+2. Run `git clone https://github.com/TrP-Labs/trptools-deploy.git && cd trptools-deploy`.
+3. Run `./scripts/setup.sh` to create `.env` and generate secrets.
+4. Run `docker compose up -d` when you are ready to start.
+5. Open `http://localhost:3000` (or the site URL you entered).
 
-Two ways to populate it:
-
-```bash
-./scripts/pull-policies.sh                        # TrP-Labs/Policies, default branch
-./scripts/pull-policies.sh your-org/Policies main # your own fork/repo
-```
-
-or drop your own files into `./policies` by hand. Either way,
-`docker compose restart frontend` afterwards — the directory is read once at
-startup, not per request. An empty `./policies` means a footer with no links.
+## Public access
 
-The pull script copies every `.md` and `.txt` across under its own name and
-never deletes anything, so if the source renames a file you will have both the
-old and the new one and the site will offer both. It says so when it spots one;
-delete the leftover unless it is yours.
-
-## Updating
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-Add `--profile bot` to both commands if you run the Discord bot, or it is left
-at its old image.
-
-`TAG` in `.env` controls which image tag is deployed — `latest` (default)
-tracks `main` in every source repo; pin it to a release for a more predictable
-upgrade cadence. Image tags carry no `v` — the release tagged `v2.1.0` publishes
-`2.1.0`, `2.1` and `2`, so `TAG=2.1` follows patch releases and nothing else. Database migrations run automatically as
-part of the backend container's startup.
-
-### Upgrading to 2.2.0
-
-**Re-pull your footer documents.** The site's footer bar is now built from
-whatever `./policies` holds, and a file's name minus its extension is the link
-label — so the old `TERMS.md` would read as "TERMS". The default source has
-renamed its files to match:
-
-```bash
-./scripts/pull-policies.sh
-rm -f policies/TERMS.md policies/PRIVACY.md   # the old names, now superseded
-docker compose restart frontend
-```
-
-Skip the `rm` and the site offers both the old and the new link. The script
-says so when it notices, but it will not delete a file for you.
-
-`/terms` and `/privacy` are gone, replaced by `/policies/<name>`. Update any
-link you have pointing at the old addresses.
-
-**The upcoming-shift announcement no longer pings by default.** Whether it
-mentions the shift ping role is now a setting on the dashboard's **Bot** page,
-off out of the box; the "starting now" announcement still pings as it always
-did. Turn it back on there if your group relied on it.
-
-Two migrations run on backend start. Both only add columns with defaults, so
-there is nothing to back up beyond your usual practice.
-
-### Upgrading to 2.1.0
-
-**Shift sign-ups were rebuilt, and the upgrade does not carry the old ones
-over.** Sign-up slots used to be defined on each shift; they now belong to a
-Roblox rank and apply to every shift that rank works. There is no honest
-automatic mapping between the two — a rank has one sheet, while slots were
-per shift and per occurrence — so the 2.1.0 migration drops the old
-`shift_slots` and `shift_signups` tables rather than guessing.
-
-In practice: after upgrading, define a sheet per rank on the dashboard's
-**Ranks** page. Anyone signed up for a *future* shift under the old model will
-need to sign up again.
-
-Take a backup first if those rows matter to you:
-
-```bash
-docker compose exec -T postgres pg_dump -U trptools trptools > trptools-backup.sql
-```
-
-## What's in `.env`
-
-| Variable                              | What it's for                                                            |
-| -------------------------------------- | -------------------------------------------------------------------------- |
-| `BASE_URL` / `FRONTEND_URL`            | Public origins of the API and the site                                    |
-| `ENCRYPTION_KEY`                       | Encrypts stored Roblox OAuth tokens and group Open Cloud keys             |
-| `ROBLOX_CLIENT_ID` / `_SECRET`         | Roblox OAuth app credentials                                              |
-| `SITE_ADMINS`                          | Comma-separated Roblox user IDs granted the site-wide admin rank          |
-| `COOKIE_DOMAIN`                        | Parent domain the session cookie is scoped to — see below                 |
-| `POSTGRES_PASSWORD`                    | Database password (generated; Postgres isn't exposed outside the network) |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY`      | MinIO credentials (generated)                                             |
-| `S3_PUBLIC_URL`                        | Full public bucket URL, including the bucket path for MinIO               |
-| `DISCORD_APP_ID` / `_CLIENT_SECRET` / `_BOT_TOKEN` | Discord application credentials, for the optional bot          |
-| `BOT_SERVICE_TOKEN`                    | Shared secret the bot authenticates to the API with (generated)           |
-| `TAG`                                  | Image tag to deploy                                                       |
-
-All of these except `TAG` are filled in by `./scripts/setup.sh`. The Discord
-ones may be left blank; everything else works without them.
-
-### Object storage: MinIO or R2
-
-The setup script defaults to MinIO and includes `/trptools` in
-`S3_PUBLIC_URL`. The backend appends only the object key (`groups/...`) to
-this URL. Keep `S3_BUCKET` set: uploads and deletes still need the bucket name.
-
-**When upgrading from the old URL behavior**, add `/<bucket-name>` to your
-existing MinIO `S3_PUBLIC_URL`, for example
-`https://storage.example.com/trptools`. Older backends append the bucket
-themselves, so update this setting together with the backend image.
-
-For R2, replace the storage settings in `.env`:
-
-```dotenv
-S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-S3_REGION=auto
-S3_BUCKET=trptools
-S3_ACCESS_KEY=<r2-access-key-id>
-S3_SECRET_KEY=<r2-secret-access-key>
-S3_PUBLIC_URL=https://assets.example.com
-```
-
-Use the public domain attached to your R2 bucket without a bucket suffix.
-The endpoint and region overrides are optional; omitting them keeps the
-Docker MinIO defaults. The bundled MinIO services still start with this
-compose file, but the backend uses the configured external endpoint.
-Recreate the backend with `docker compose up -d backend` after changing
-settings. Copy existing objects with their original `groups/...` keys;
-media URLs are derived from those keys, so no database migration is needed.
-
-Public reads must be enabled through the bucket policy or public domain.
-Uploads no longer send object ACLs; Docker configures MinIO's public bucket
-policy automatically.
-
-### Sign-in works on the API but the site still shows you signed out
-
-You're missing `COOKIE_DOMAIN`. When the site and API are on different
-hostnames — say `trptools.com` and `apis.trptools.com` — the session cookie
-defaults to *host-only* on the API's hostname. The browser dutifully sends it
-back to the API, which is why signing in appears to succeed, but it never
-sends it to the site, so server-side rendering sees an anonymous visitor on
-every page load.
-
-Set it to the shared parent, with the leading dot:
-
-```bash
-COOKIE_DOMAIN=.trptools.com
-```
-
-then `docker compose up -d` and sign in again — the old host-only cookie is
-still in your browser and won't be replaced until you do.
-
-`setup.sh` works this out from your two URLs and offers it as a default, so a
-fresh install doesn't hit this. Leave it blank when the site and API share one
-hostname.
-
-## License
-
-MIT — see [LICENSE](./LICENSE). The application source has its own MIT
-licenses: [trptools-backend](https://github.com/TrP-Labs/trptools-backend),
-[trptools-frontend](https://github.com/TrP-Labs/trptools-frontend),
-[trptools-bot](https://github.com/TrP-Labs/trptools-bot).
+1. Point your site, API, and image domains at the server and enable HTTPS with your reverse proxy.
+2. Proxy the site to port `3000`, the API to `3001`, and images to `9000`; keep internal services private.
+3. Set `FRONTEND_URL`, `BASE_URL`, and `S3_PUBLIC_URL` to those HTTPS origins in `.env`.
+4. Set `COOKIE_DOMAIN` to their shared parent domain, such as `.example.com`, then run `docker compose up -d`.
+
+Garage creates the media bucket automatically; the image proxy serves public reads only. This single-server setup has no storage redundancy, so back up Postgres and Garage.
+
+## Roblox sign-in
+
+1. Create an OAuth app in the [Roblox Creator Dashboard](https://create.roblox.com/dashboard/credentials).
+2. Enable `openid`, `profile`, and `group:read`, and register `<BASE_URL>/auth/callback`.
+3. Set `ROBLOX_CLIENT_ID` and `ROBLOX_CLIENT_SECRET` in `.env`, then run `docker compose up -d`.
+
+Groups can add an Open Cloud key in their dashboard settings. The key must belong to a Roblox user account.
+
+## Discord (optional)
+
+1. Create an app at the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Register `<BASE_URL>/bot/callback` and `<BASE_URL>/auth/discord/callback` as OAuth redirects.
+3. Set `DISCORD_APP_ID`, `DISCORD_CLIENT_SECRET`, and `DISCORD_BOT_TOKEN` in `.env`.
+4. Run `docker compose --profile bot up -d`, then connect your server from the group dashboard.
+
+## Cloudflare Workers
+
+Use the [backend](https://github.com/TrP-Labs/trptools-backend#cloudflare-workers), [frontend](https://github.com/TrP-Labs/trptools-frontend#cloudflare-workers), and [bot](https://github.com/TrP-Labs/trptools-bot#cloudflare-workers) setup instructions. Workers use Neon, Upstash REST, and R2 or another reachable S3 service; this Compose stack is for Docker.
+
+## Update
+
+1. Run `git pull --ff-only`.
+2. Set `TAG` in `.env` to a release such as `2.12.0` (without `v`), or keep `latest`.
+3. Run `docker compose pull && docker compose up -d` (add `--profile bot` to both commands if needed).
+4. Check `docker compose ps` and `docker compose logs --tail=50 backend frontend`.
+
+The API applies migrations on startup. Footer documents refresh from `POLICIES_REPOSITORY` (default `TrP-Labs/Policies`); set it to your fork to use your own documents.
+
+## Existing MinIO installs
+
+Back up the old bucket and copy its objects to Garage before switching; this update does not migrate media or delete the old volume. Run `./scripts/setup.sh --garage` to replace only storage settings, preserving database and encryption secrets, and use an image URL without the old bucket suffix.
+
+## Stop and back up
+
+1. Run `docker compose exec -T postgres pg_dump -U trptools trptools > backup.sql` to back up the database.
+2. Stop the stack with `docker compose --profile bot down` and back up its `garage-data` volume before an upgrade.
+3. Run `docker compose up -d` (or `docker compose --profile bot up -d`) to restart; keep `.env` with your backups.
+
+Avoid `down -v`: it deletes the data volumes. Garage stores metadata and objects together in `garage-data`.

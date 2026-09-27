@@ -1,0 +1,9 @@
+server {
+    listen 8080;
+    location / {
+        limit_except GET HEAD { deny all; }
+        proxy_set_header Host "${S3_BUCKET}.web.garage.internal";
+        proxy_pass http://garage:3902;
+        add_header X-Content-Type-Options nosniff always;
+    }
+}

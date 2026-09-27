@@ -28,44 +28,50 @@ services:
       timeout: 5s
       retries: 10
 
-  # S3-compatible object storage for uploaded route and depot images. Its API
-  # port is published because uploaded images are served straight from it —
-  # see S3_PUBLIC_URL.
-  minio:
-    image: minio/minio:latest
+  garage:
+    image: dxflrs/garage:v2.3.0
     restart: unless-stopped
-    command: ['server', '/data', '--console-address', ':9001']
+    command: ['/garage', 'server', '--single-node', '--default-bucket']
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set in .env}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set in .env}
-    ports:
-      - '9000:9000'
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?run ./scripts/setup.sh}
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?run ./scripts/setup.sh}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?run ./scripts/setup.sh}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-trptools}
     volumes:
-      - minio-data:/data
+      - ./storage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
     healthcheck:
-      test: ['CMD', 'mc', 'ready', 'local']
+      test: ['CMD', '/garage', 'bucket', 'info', '${S3_BUCKET:-trptools}']
       interval: 5s
       timeout: 5s
       retries: 20
 
-  # Creates the bucket and makes it readable, then exits.
-  minio-init:
-    image: minio/mc:latest
+  garage-init:
+    image: dxflrs/garage:v2.3.0
     depends_on:
-      minio:
+      garage:
         condition: service_healthy
-    entrypoint:
-      - sh
-      - -c
-      - |
-        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" &&
-        mc mb --ignore-existing "local/$${S3_BUCKET}" &&
-        mc anonymous set download "local/$${S3_BUCKET}"
+    entrypoint: ['/garage']
+    command: ['bucket', 'website', '--allow', '${S3_BUCKET:-trptools}']
     environment:
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
-      S3_BUCKET: ${S3_BUCKET:-trptools}
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?run ./scripts/setup.sh}
+    volumes:
+      - ./storage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
     restart: 'no'
+
+  images:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-trptools}
+    volumes:
+      - ./storage/images.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - '9000:8080'
 
   backend:
     image: ghcr.io/trp-labs/trptools-backend:${TAG:-latest}
@@ -75,8 +81,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       PORT: '3001'
@@ -87,25 +93,18 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set in .env — run ./scripts/setup.sh}
       ROBLOX_CLIENT_ID: ${ROBLOX_CLIENT_ID:-}
       ROBLOX_CLIENT_SECRET: ${ROBLOX_CLIENT_SECRET:-}
+      ROBLOX_API_KEY: ${ROBLOX_API_KEY:-}
       SITE_ADMINS: ${SITE_ADMINS:-}
-      # Discord, for the optional bot. The dashboard talks to Discord itself to
-      # list channels and roles, so these belong to the API as well as to the
-      # bot container. Blank means the Bot page says so and offers nothing.
       DISCORD_APP_ID: ${DISCORD_APP_ID:-}
       DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-}
-      # Required when the site and API are on different hostnames that share
-      # a parent domain (e.g. trptools.com + apis.trptools.com → .trptools.com).
-      # Without it the session cookie is host-only on the API's hostname, the
-      # browser never sends it to the site, and server-side rendering sees
-      # every visitor as signed out. Leave blank for a single-host deployment.
+      BOT_WORKER_URL: ${BOT_WORKER_URL:-}
+      BOT_WORKER_SYNC_TOKEN: ${BOT_WORKER_SYNC_TOKEN:-}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
-      # MinIO uses the internal endpoint by default; override it for R2.
-      # The public URL is the full bucket URL, including its path if any.
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://garage:3900}
       S3_PUBLIC_URL: ${S3_PUBLIC_URL:?set in .env}
-      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_REGION: ${S3_REGION:-garage}
       S3_BUCKET: ${S3_BUCKET:-trptools}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
@@ -116,51 +115,35 @@ services:
     image: ghcr.io/trp-labs/trptools-frontend:${TAG:-latest}
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       PORT: '3000'
       ORIGIN: ${FRONTEND_URL:?set in .env}
-      # What the browser calls.
       PUBLIC_API_URL: ${BASE_URL:?set in .env}
-      # What server-side rendering calls. Inside the container network the
-      # public URL points at this container, not the API, so SSR needs the
-      # service name instead.
       INTERNAL_API_URL: http://backend:3001
+      POLICIES_REPOSITORY: ${POLICIES_REPOSITORY:-TrP-Labs/Policies}
+      POLICIES_REF: ${POLICIES_REF:-main}
+      POLICIES_GITHUB_TOKEN: ${POLICIES_GITHUB_TOKEN:-}
     ports:
       - '3000:3000'
-    volumes:
-      # The site's footer bar: one file per link, named for the label it
-      # shows. Read once at startup. Populate with ./scripts/pull-policies.sh,
-      # or drop your own files here. Empty means a footer with no links.
-      - ./policies:/app/policies:ro
 
-  # The Discord bot. Opt in with `docker compose --profile bot up -d`, once the
-  # Discord credentials are in .env — it exits immediately without them, and
-  # nothing else depends on it. An instance without a bot works exactly as
-  # before; groups simply have no server to connect.
   bot:
     image: ghcr.io/trp-labs/trptools-bot:${TAG:-latest}
     profiles: ['bot']
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       NODE_ENV: production
-      # Deliberately not marked required with `:?`: compose interpolates every
-      # service before it applies profiles, so a required variable here would
-      # break `docker compose up -d` for the many instances that run no bot.
-      # The bot itself explains exactly what is missing and exits.
       DISCORD_APP_ID: ${DISCORD_APP_ID:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-      # The service name, not BASE_URL: inside the compose network the public
-      # URL does not reach the API.
       API_URL: http://backend:3001
       BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-}
-      # Shared with the API, which publishes sign-up changes on it so Discord
-      # sheets follow sign-ups made on the website.
       REDIS_URL: redis://valkey:6379
 
 volumes:
   postgres-data:
   valkey-data:
-  minio-data:
+  garage-data:

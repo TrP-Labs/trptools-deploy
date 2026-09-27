@@ -1,184 +1,78 @@
 #!/usr/bin/env bash
-# Interactive first-time setup: generates secrets, asks a few questions, and
-# writes .env. Safe to re-run — it will ask before overwriting an existing
-# .env.
+# Writes configuration only; starting containers remains the operator's choice.
 set -euo pipefail
+umask 077
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 for bin in docker openssl; do
-	if ! command -v "$bin" >/dev/null 2>&1; then
-		echo "error: $bin is required but not on PATH." >&2
-		exit 1
-	fi
+    command -v "$bin" >/dev/null || { echo "$bin is required." >&2; exit 1; }
 done
-if ! docker compose version >/dev/null 2>&1; then
-	echo "error: 'docker compose' (the v2 plugin) is required." >&2
-	exit 1
+docker compose version >/dev/null
+
+mode=${1:-}
+case "$mode" in ''|--garage) ;; *) echo 'Usage: ./scripts/setup.sh [--garage]' >&2; exit 1 ;; esac
+if [ -f .env ] && [ "$mode" != --garage ]; then
+    echo '.env already exists; edit it directly. Use --garage to replace only storage settings.'
+    exit 0
+fi
+if [ "$mode" = --garage ] && [ ! -f .env ]; then
+    echo 'Run setup without --garage first.' >&2
+    exit 1
 fi
 
-if [ -f .env ]; then
-	read -rp ".env already exists. Overwrite it? [y/N] " reply
-	case "$reply" in
-	[yY]*) ;;
-	*)
-		echo "Leaving .env untouched."
-		exit 0
-		;;
-	esac
+if [ "$mode" = --garage ] && grep -q '^GARAGE_RPC_SECRET=.' .env; then
+    echo 'Garage is already configured; edit storage settings directly to preserve its credentials.' >&2
+    exit 1
 fi
 
 prompt() {
-	# prompt <var-name> <question> <default>
-	local __var=$1 __question=$2 __default=$3 __reply
-	read -rp "$__question [$__default] " __reply
-	printf -v "$__var" '%s' "${__reply:-$__default}"
+    local answer
+    printf '%s [%s]: ' "$2" "$3" >&2
+    IFS= read -r answer || { echo 'No input received.' >&2; exit 1; }
+    printf -v "$1" '%s' "${answer:-$3}"
+}
+# Quoting prevents Compose from expanding dollar signs in operator credentials.
+write_env() {
+    local value=${2//\\/\\\\}
+    value=${value//\'/\\\'}
+    printf "%s='%s'\n" "$1" "$value"
 }
 
-echo "== TrP Tools setup =="
-echo "Press enter to accept the default shown in [brackets]."
-echo
-
-prompt BASE_URL "Public URL of the API (BASE_URL):" "http://localhost:3001"
-prompt FRONTEND_URL "Public URL of the site (FRONTEND_URL):" "http://localhost:3000"
-
-s3_default="$(printf '%s' "$BASE_URL" | sed -E 's#(https?://[^:/]+).*#\1:9000/trptools#')"
-prompt S3_PUBLIC_URL "Full public bucket URL, including /trptools for MinIO (S3_PUBLIC_URL):" "$s3_default"
-
-# The session cookie has to be readable by both the site and the API. When
-# they sit on different hostnames under one parent domain, the cookie needs
-# an explicit Domain of that parent — otherwise it is host-only on the API
-# and the site renders every visitor as signed out.
-host_of() { printf '%s' "$1" | sed -E 's#^https?://##; s#[:/].*##'; }
-common_parent() {
-	# Longest shared dot-suffix of two hostnames, if it has 2+ labels.
-	local a b sa sb
-	a=$(host_of "$1")
-	b=$(host_of "$2")
-	[ "$a" = "$b" ] && return 0
-	while [ -n "$a" ]; do
-		case "$b" in
-		*".$a" | "$a")
-			# Needs at least domain + TLD to be a valid cookie domain.
-			if [ "$(printf '%s' "$a" | tr -cd '.' | wc -c)" -ge 1 ]; then
-				printf '.%s' "$a"
-			fi
-			return 0
-			;;
-		esac
-		case "$a" in
-		*.*) a=${a#*.} ;;
-		*) return 0 ;;
-		esac
-	done
-}
-cookie_default="$(common_parent "$BASE_URL" "$FRONTEND_URL")"
-if [ -n "$cookie_default" ]; then
-	echo
-	echo "The site and API are on different hostnames, so the session cookie"
-	echo "needs a shared parent domain to be visible to both."
-	prompt COOKIE_DOMAIN "  COOKIE_DOMAIN:" "$cookie_default"
+if [ "$mode" != --garage ]; then
+    prompt BASE_URL 'API URL' 'http://localhost:3001'
+    prompt FRONTEND_URL 'Site URL' 'http://localhost:3000'
+    prompt COOKIE_DOMAIN 'Shared cookie domain (blank for localhost)' ''
+    prompt ROBLOX_CLIENT_ID 'Roblox OAuth client ID (optional for now)' ''
+    prompt ROBLOX_CLIENT_SECRET 'Roblox OAuth client secret' ''
+    prompt SITE_ADMINS 'Site admin Roblox user IDs, comma separated' ''
 else
-	COOKIE_DOMAIN=""
+    echo 'This replaces storage credentials only. Copy existing media to Garage before switching.'
 fi
+prompt S3_PUBLIC_URL 'Public image URL' 'http://localhost:9000'
 
-echo
-echo "Roblox OAuth (leave blank to fill in later — sign-in won't work until"
-echo "these are set; see the README for how to register an app):"
-prompt ROBLOX_CLIENT_ID "  Roblox client ID:" ""
-prompt ROBLOX_CLIENT_SECRET "  Roblox client secret:" ""
-prompt SITE_ADMINS "Comma-separated Roblox user IDs to grant site-admin:" ""
-
-echo
-echo "Discord bot (optional — leave blank if you don't want one; the site works"
-echo "without it. See the README's 'Setting up the Discord bot' section):"
-prompt DISCORD_APP_ID "  Discord application ID:" ""
-prompt DISCORD_CLIENT_SECRET "  Discord client secret:" ""
-prompt DISCORD_BOT_TOKEN "  Discord bot token:" ""
-
-echo
-read -rp "Pull the default TrP Tools footer documents from TrP-Labs/Policies now? [Y/n] " pull_reply
-case "$pull_reply" in
-[nN]*) ;;
-*) ./scripts/pull-policies.sh ;;
-esac
-
-echo
-echo "Generating secrets..."
-ENCRYPTION_KEY="$(openssl rand -base64 32)"
-POSTGRES_PASSWORD="$(openssl rand -hex 24)"
-S3_ACCESS_KEY="$(openssl rand -hex 12)"
-S3_SECRET_KEY="$(openssl rand -hex 24)"
-# Shared between the API and the bot container. Generated whether or not a bot
-# is set up now, so turning one on later is only a matter of adding the Discord
-# credentials.
-BOT_SERVICE_TOKEN="$(openssl rand -hex 32)"
-
-cat >.env <<EOF
-# Generated by scripts/setup.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-BASE_URL=$BASE_URL
-FRONTEND_URL=$FRONTEND_URL
-
-# Encrypts stored Roblox OAuth tokens and group Open Cloud keys.
-ENCRYPTION_KEY=$ENCRYPTION_KEY
-
-ROBLOX_CLIENT_ID=$ROBLOX_CLIENT_ID
-ROBLOX_CLIENT_SECRET=$ROBLOX_CLIENT_SECRET
-
-# Comma separated Roblox user IDs granted the site-wide admin rank.
-SITE_ADMINS=$SITE_ADMINS
-
-# Parent domain the session cookie is scoped to, when the site and API are on
-# different hostnames (e.g. .example.com). Blank for a single-host deploy.
-COOKIE_DOMAIN=$COOKIE_DOMAIN
-
-# --- Discord bot (optional) ----------------------------------------------
-# From https://discord.com/developers/applications. The application id doubles
-# as the OAuth client id and the bot's own user id. Add <BASE_URL>/bot/callback
-# to the application's OAuth2 redirect URIs, or the dashboard's "Add to Discord"
-# button is refused. Start the bot with: docker compose --profile bot up -d
-DISCORD_APP_ID=$DISCORD_APP_ID
-DISCORD_CLIENT_SECRET=$DISCORD_CLIENT_SECRET
-DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
-
-# Shared secret between the API and the bot. Not a Discord credential.
-BOT_SERVICE_TOKEN=$BOT_SERVICE_TOKEN
-
-# --- Postgres -----------------------------------------------------------
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-
-# --- Object storage (MinIO) ----------------------------------------------
-S3_BUCKET=trptools
-S3_ACCESS_KEY=$S3_ACCESS_KEY
-S3_SECRET_KEY=$S3_SECRET_KEY
-# Full public bucket URL: include the bucket path for MinIO.
-S3_PUBLIC_URL=$S3_PUBLIC_URL
-
-# Image tag to deploy. "latest" tracks main; pin to a release for a stable
-# rollout — image tags carry no "v", so v2.1.0 publishes 2.1.0, 2.1 and 2.
-TAG=latest
-EOF
-chmod 600 .env
-
-echo
-echo "Wrote .env. Next:"
-if [ -n "$DISCORD_BOT_TOKEN" ]; then
-	echo "  docker compose --profile bot up -d"
+tmp=$(mktemp .env.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+if [ "$mode" = --garage ]; then
+    awk '!/^(GARAGE_RPC_SECRET|S3_ENDPOINT|S3_REGION|S3_BUCKET|S3_ACCESS_KEY|S3_SECRET_KEY|S3_PUBLIC_URL)=/' .env >"$tmp"
 else
-	echo "  docker compose up -d"
+    {
+        for name in BASE_URL FRONTEND_URL COOKIE_DOMAIN ROBLOX_CLIENT_ID ROBLOX_CLIENT_SECRET SITE_ADMINS; do
+            write_env "$name" "${!name}"
+        done
+        write_env ENCRYPTION_KEY "$(openssl rand -base64 32)"
+        write_env POSTGRES_PASSWORD "$(openssl rand -hex 24)"
+        write_env BOT_SERVICE_TOKEN "$(openssl rand -hex 32)"
+        printf 'TAG=latest\nDISCORD_APP_ID=\nDISCORD_CLIENT_SECRET=\nDISCORD_BOT_TOKEN=\n'
+        printf 'BOT_WORKER_URL=\nBOT_WORKER_SYNC_TOKEN=\n'
+        printf 'POLICIES_REPOSITORY=TrP-Labs/Policies\nPOLICIES_REF=main\n'
+    } >"$tmp"
 fi
-echo
-echo "Then open $FRONTEND_URL"
-if [ -n "$DISCORD_BOT_TOKEN" ]; then
-	echo
-	echo "The Discord bot only starts with '--profile bot' — plain"
-	echo "'docker compose up -d' leaves it out. Add <BASE_URL>/bot/callback to"
-	echo "your Discord application's OAuth2 redirect URIs before connecting a"
-	echo "server from the dashboard's Bot page."
-fi
-if [ -z "$ROBLOX_CLIENT_ID" ]; then
-	echo
-	echo "Roblox credentials are blank, so sign-in won't work yet — see the"
-	echo "README's 'Setting up Roblox' section, then set ROBLOX_CLIENT_ID and"
-	echo "ROBLOX_CLIENT_SECRET in .env and run 'docker compose up -d' again."
-fi
+{
+    write_env GARAGE_RPC_SECRET "$(openssl rand -hex 32)"
+    write_env S3_ACCESS_KEY "GK$(openssl rand -hex 16)"
+    write_env S3_SECRET_KEY "$(openssl rand -hex 32)"
+    printf 'S3_BUCKET=trptools\nS3_REGION=garage\nS3_ENDPOINT=http://garage:3900\n'
+    write_env S3_PUBLIC_URL "$S3_PUBLIC_URL"
+} >>"$tmp"
+mv "$tmp" .env
+printf '\nSaved .env. Start when ready: docker compose up -d\n'
